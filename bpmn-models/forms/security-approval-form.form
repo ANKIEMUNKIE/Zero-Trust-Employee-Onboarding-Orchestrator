@@ -1,0 +1,34 @@
+{
+  "components": [
+    {
+      "text": "### Zero-Trust Entitlement Security Review",
+      "type": "text",
+      "id": "Field_Title"
+    },
+    {
+      "label": "Employee Email",
+      "type": "textfield",
+      "id": "Field_Email",
+      "key": "email",
+      "disabled": true
+    },
+    {
+      "label": "Requested Application",
+      "type": "textfield",
+      "id": "Field_App",
+      "key": "appItem.appName",
+      "disabled": true
+    },
+    {
+      "label": "Approve Zero-Trust Entitlement?",
+      "type": "checkbox",
+      "id": "Field_Approved",
+      "key": "securityApproved"
+    }
+  ],
+  "type": "default",
+  "id": "Form_SecurityEntitlementApproval",
+  "executionPlatform": "Camunda Cloud",
+  "executionPlatformVersion": "8.5.0",
+  "schemaVersion": 16
+}

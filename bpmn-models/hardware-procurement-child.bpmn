@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+                  id="Definitions_HardwareChild"
+                  targetNamespace="http://bpmn.io/schema/bpmn"
+                  exporter="Camunda Modeler"
+                  exporterVersion="5.25.0">
+
+  <bpmn:process id="hardware-procurement-child" name="Hardware Asset Procurement &amp; Courier Child Process" isExecutable="true">
+    <bpmn:startEvent id="Start_HardwareChild" name="Hardware Request Received">
+      <bpmn:outgoing>Flow_HwStartToAllocate</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <bpmn:serviceTask id="Task_AllocateLaptopYubikey" name="Allocate Laptop Serial &amp; Hardware YubiKey">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="allocate-hardware-asset" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_HwStartToAllocate</bpmn:incoming>
+      <bpmn:outgoing>Flow_AllocateToCourier</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:serviceTask id="Task_DispatchCourier" name="Book Courier &amp; Generate Tracking Number">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="dispatch-hardware-courier" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_AllocateToCourier</bpmn:incoming>
+      <bpmn:outgoing>Flow_CourierToEnd</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="End_HardwareChild" name="Hardware Dispatched">
+      <bpmn:incoming>Flow_CourierToEnd</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:sequenceFlow id="Flow_HwStartToAllocate" sourceRef="Start_HardwareChild" targetRef="Task_AllocateLaptopYubikey" />
+    <bpmn:sequenceFlow id="Flow_AllocateToCourier" sourceRef="Task_AllocateLaptopYubikey" targetRef="Task_DispatchCourier" />
+    <bpmn:sequenceFlow id="Flow_CourierToEnd" sourceRef="Task_DispatchCourier" targetRef="End_HardwareChild" />
+  </bpmn:process>
+
+  <bpmndi:BPMNDiagram id="BPMNDiagram_HwChild">
+    <bpmndi:BPMNPlane id="BPMNPlane_HwChild" bpmnElement="hardware-procurement-child">
+      <bpmndi:BPMNShape id="Start_HardwareChild_di" bpmnElement="Start_HardwareChild">
+        <dc:Bounds x="182" y="102" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_AllocateLaptopYubikey_di" bpmnElement="Task_AllocateLaptopYubikey">
+        <dc:Bounds x="270" y="80" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_DispatchCourier_di" bpmnElement="Task_DispatchCourier">
+        <dc:Bounds x="430" y="80" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_HardwareChild_di" bpmnElement="End_HardwareChild">
+        <dc:Bounds x="592" y="102" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_HwStartToAllocate_di" bpmnElement="Flow_HwStartToAllocate">
+        <di:waypoint x="218" y="120" />
+        <di:waypoint x="270" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_AllocateToCourier_di" bpmnElement="Flow_AllocateToCourier">
+        <di:waypoint x="370" y="120" />
+        <di:waypoint x="430" y="120" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CourierToEnd_di" bpmnElement="Flow_CourierToEnd">
+        <di:waypoint x="530" y="120" />
+        <di:waypoint x="592" y="120" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>

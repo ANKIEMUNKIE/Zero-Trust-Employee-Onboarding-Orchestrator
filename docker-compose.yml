@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  postgres-db:
+    image: postgres:15-alpine
+    container_name: onboarding-postgres
+    environment:
+      POSTGRES_DB: onboardingdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres123}
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  zeebe-engine:
+    image: camunda/zeebe:8.5.0
+    container_name: camunda-zeebe
+    environment:
+      - ZEEBE_BROKER_GATEWAY_ENABLE=true
+      - ZEEBE_BROKER_NETWORK_HOST=0.0.0.0
+    ports:
+      - "26500:26500"
+      - "9600:9600"
+
+  backend-springboot:
+    build: ./backend-springboot
+    container_name: onboarding-backend
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-db:5432/onboardingdb
+      SPRING_DATASOURCE_DRIVER: org.postgresql.Driver
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD:-postgres123}
+      ZEEBE_ENABLED: "true"
+      ZEEBE_GATEWAY_ADDRESS: zeebe-engine:26500
+    depends_on:
+      postgres-db:
+        condition: service_healthy
+      zeebe-engine:
+        condition: service_started
+
+  frontend-react:
+    build: ./frontend-react
+    container_name: onboarding-frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend-springboot

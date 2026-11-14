@@ -1,0 +1,27 @@
+{
+  "components": [
+    {
+      "text": "### Background Verification & Reference Audit",
+      "type": "text",
+      "id": "Field_BgvHeader"
+    },
+    {
+      "label": "Candidate Name",
+      "type": "textfield",
+      "id": "Field_CandidateName",
+      "key": "employeeName",
+      "disabled": true
+    },
+    {
+      "label": "Verification Decision (PASSED / FAILED)",
+      "type": "textfield",
+      "id": "Field_BgvDecision",
+      "key": "bgvStatus"
+    }
+  ],
+  "type": "default",
+  "id": "Form_BgvAuditReview",
+  "executionPlatform": "Camunda Cloud",
+  "executionPlatformVersion": "8.5.0",
+  "schemaVersion": 16
+}

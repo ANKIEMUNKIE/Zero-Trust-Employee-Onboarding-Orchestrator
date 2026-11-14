@@ -1,0 +1,445 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+                  xmlns:zeebe="http://camunda.org/schema/zeebe/1.0"
+                  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                  id="Definitions_ZeroTrustOnboarding"
+                  targetNamespace="http://bpmn.io/schema/bpmn"
+                  exporter="Camunda Modeler"
+                  exporterVersion="5.25.0">
+
+  <bpmn:error id="Error_BgvFailed" name="BGV_FAILED" errorCode="BGV_FAILED" />
+
+  <bpmn:process id="zero-trust-onboarding-process" name="Zero-Trust Employee Onboarding &amp; Multi-App Provisioning" isExecutable="true">
+
+    <!-- START EVENT -->
+    <bpmn:startEvent id="StartEvent_Onboarding" name="Onboarding Request Submitted">
+      <bpmn:outgoing>Flow_StartToInit</bpmn:outgoing>
+    </bpmn:startEvent>
+
+    <!-- INITIALIZE ZERO TRUST PROFILE -->
+    <bpmn:serviceTask id="Task_InitIdentity" name="Initialize Zero-Trust Identity Profile">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="init-zero-trust-profile" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_StartToInit</bpmn:incoming>
+      <bpmn:outgoing>Flow_InitToSplit</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- PARALLEL GATEWAY SPLIT -->
+    <bpmn:parallelGateway id="Gateway_ParallelSplit" name="Run IT Setup &amp; BGV Concurrently">
+      <bpmn:incoming>Flow_InitToSplit</bpmn:incoming>
+      <bpmn:outgoing>Flow_SplitToMultiApp</bpmn:outgoing>
+      <bpmn:outgoing>Flow_SplitToBgvSub</bpmn:outgoing>
+    </bpmn:parallelGateway>
+
+    <!-- =================================================================== -->
+    <!-- TRACK 1: PARALLEL MULTI-INSTANCE SUB-PROCESS (SAAS APP PROVISIONING) -->
+    <!-- =================================================================== -->
+    <bpmn:subProcess id="SubProcess_MultiAppProvisioning" name="Multi-App Entitlement &amp; Provisioning (Parallel Multi-Instance)">
+      <bpmn:incoming>Flow_SplitToMultiApp</bpmn:incoming>
+      <bpmn:outgoing>Flow_MultiAppToJoin</bpmn:outgoing>
+      <bpmn:multiInstanceLoopCharacteristics isSequential="false">
+        <bpmn:extensionElements>
+          <zeebe:loopCharacteristics inputCollection="=requestedApps"
+                                     inputElement="appItem"
+                                     outputCollection="provisionedResults"
+                                     outputElement="={appName: appItem.appName, role: appItem.role, status: appProvisionStatus, accountId: generatedAccountId}" />
+        </bpmn:extensionElements>
+      </bpmn:multiInstanceLoopCharacteristics>
+
+      <bpmn:startEvent id="Start_AppSub" name="Start App Loop">
+        <bpmn:outgoing>Flow_AppStartToGateway</bpmn:outgoing>
+      </bpmn:startEvent>
+
+      <bpmn:exclusiveGateway id="Gateway_RequiresSecApproval" name="High Privilege App?" default="Flow_NoApprovalNeeded">
+        <bpmn:incoming>Flow_AppStartToGateway</bpmn:incoming>
+        <bpmn:outgoing>Flow_ApprovalNeeded</bpmn:outgoing>
+        <bpmn:outgoing>Flow_NoApprovalNeeded</bpmn:outgoing>
+      </bpmn:exclusiveGateway>
+
+      <bpmn:serviceTask id="Task_SecurityApproval" name="Security &amp; Manager Entitlement Approval">
+        <bpmn:extensionElements>
+          <zeebe:taskDefinition type="security-entitlement-approval" />
+        </bpmn:extensionElements>
+        <bpmn:incoming>Flow_ApprovalNeeded</bpmn:incoming>
+        <bpmn:outgoing>Flow_ApprovalToProvision</bpmn:outgoing>
+      </bpmn:serviceTask>
+
+      <!-- Outbound REST / IAM Provisioning Task -->
+      <bpmn:serviceTask id="Task_ProvisionAppRest" name="Provision SaaS Account (IAM REST Connector)">
+        <bpmn:extensionElements>
+          <zeebe:taskDefinition type="provision-saas-app" retries="3" />
+          <zeebe:ioMapping>
+            <zeebe:input source="=appItem.appName" target="targetAppName" />
+            <zeebe:input source="=appItem.role" target="targetAppRole" />
+            <zeebe:input source="=email" target="employeeEmail" />
+          </zeebe:ioMapping>
+        </bpmn:extensionElements>
+        <bpmn:incoming>Flow_ApprovalToProvision</bpmn:incoming>
+        <bpmn:incoming>Flow_NoApprovalNeeded</bpmn:incoming>
+        <bpmn:outgoing>Flow_ProvisionToAppEnd</bpmn:outgoing>
+      </bpmn:serviceTask>
+
+      <bpmn:endEvent id="End_AppSub" name="App Provisioned">
+        <bpmn:incoming>Flow_ProvisionToAppEnd</bpmn:incoming>
+      </bpmn:endEvent>
+
+      <bpmn:sequenceFlow id="Flow_AppStartToGateway" sourceRef="Start_AppSub" targetRef="Gateway_RequiresSecApproval" />
+      <bpmn:sequenceFlow id="Flow_ApprovalNeeded" name="Yes" sourceRef="Gateway_RequiresSecApproval" targetRef="Task_SecurityApproval">
+        <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=appItem.requiresSecurityApproval = true</bpmn:conditionExpression>
+      </bpmn:sequenceFlow>
+      <bpmn:sequenceFlow id="Flow_NoApprovalNeeded" name="No (Auto)" sourceRef="Gateway_RequiresSecApproval" targetRef="Task_ProvisionAppRest" />
+      <bpmn:sequenceFlow id="Flow_ApprovalToProvision" sourceRef="Task_SecurityApproval" targetRef="Task_ProvisionAppRest" />
+      <bpmn:sequenceFlow id="Flow_ProvisionToAppEnd" sourceRef="Task_ProvisionAppRest" targetRef="End_AppSub" />
+    </bpmn:subProcess>
+
+    <!-- =================================================================== -->
+    <!-- TRACK 2: EMBEDDED SUB-PROCESS (BACKGROUND & REFERENCE CHECK)        -->
+    <!-- =================================================================== -->
+    <bpmn:subProcess id="SubProcess_BackgroundVerification" name="Background Verification &amp; Sequential Reference Check">
+      <bpmn:incoming>Flow_SplitToBgvSub</bpmn:incoming>
+      <bpmn:outgoing>Flow_BgvSuccessToJoin</bpmn:outgoing>
+
+      <bpmn:startEvent id="Start_BgvSub" name="Start BGV">
+        <bpmn:outgoing>Flow_BgvStartToSeqRef</bpmn:outgoing>
+      </bpmn:startEvent>
+
+      <!-- SEQUENTIAL MULTI-INSTANCE: Verify Employment References one by one -->
+      <bpmn:serviceTask id="Task_SequentialRefCheck" name="Verify Past Employer Reference (Sequential MI)">
+        <bpmn:extensionElements>
+          <zeebe:taskDefinition type="verify-employment-reference" />
+        </bpmn:extensionElements>
+        <bpmn:incoming>Flow_BgvStartToSeqRef</bpmn:incoming>
+        <bpmn:outgoing>Flow_SeqRefToCrimCheck</bpmn:outgoing>
+        <bpmn:multiInstanceLoopCharacteristics isSequential="true">
+          <bpmn:extensionElements>
+            <zeebe:loopCharacteristics inputCollection="=references" inputElement="refItem" />
+          </bpmn:extensionElements>
+        </bpmn:multiInstanceLoopCharacteristics>
+      </bpmn:serviceTask>
+
+      <!-- Criminal & Identity Check (Throws BGV_FAILED Error if flagged) -->
+      <bpmn:serviceTask id="Task_CriminalBgvCheck" name="Run Global Background &amp; Identity Audit">
+        <bpmn:extensionElements>
+          <zeebe:taskDefinition type="verify-background-check" />
+        </bpmn:extensionElements>
+        <bpmn:incoming>Flow_SeqRefToCrimCheck</bpmn:incoming>
+        <bpmn:outgoing>Flow_CrimCheckToBgvEnd</bpmn:outgoing>
+      </bpmn:serviceTask>
+
+      <bpmn:endEvent id="End_BgvSub" name="BGV Cleared">
+        <bpmn:incoming>Flow_CrimCheckToBgvEnd</bpmn:incoming>
+      </bpmn:endEvent>
+
+      <bpmn:sequenceFlow id="Flow_BgvStartToSeqRef" sourceRef="Start_BgvSub" targetRef="Task_SequentialRefCheck" />
+      <bpmn:sequenceFlow id="Flow_SeqRefToCrimCheck" sourceRef="Task_SequentialRefCheck" targetRef="Task_CriminalBgvCheck" />
+      <bpmn:sequenceFlow id="Flow_CrimCheckToBgvEnd" sourceRef="Task_CriminalBgvCheck" targetRef="End_BgvSub" />
+    </bpmn:subProcess>
+
+    <!-- BOUNDARY EVENT 1: NON-INTERRUPTING SLA TIMER ON BGV SUB-PROCESS -->
+    <bpmn:boundaryEvent id="Boundary_BgvSlaTimer" name="24h SLA Reminder" cancelActivity="false" attachedToRef="SubProcess_BackgroundVerification">
+      <bpmn:outgoing>Flow_TimerToSlaAlert</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TimerDef_BgvSla">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT24H</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+
+    <bpmn:serviceTask id="Task_SendSlaAlert" name="Notify HR of Delayed BGV SLA">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="send-sla-escalation" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_TimerToSlaAlert</bpmn:incoming>
+      <bpmn:outgoing>Flow_SlaAlertToEnd</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="End_SlaAlert" name="SLA Alert Sent">
+      <bpmn:incoming>Flow_SlaAlertToEnd</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <!-- BOUNDARY EVENT 2: INTERRUPTING ERROR BOUNDARY EVENT ON BGV SUB-PROCESS -->
+    <bpmn:boundaryEvent id="Boundary_BgvFailedError" name="BGV Failed Anomaly" attachedToRef="SubProcess_BackgroundVerification">
+      <bpmn:outgoing>Flow_BgvErrorToRevoke</bpmn:outgoing>
+      <bpmn:errorEventDefinition id="ErrorDef_BgvFailed" errorRef="Error_BgvFailed" />
+    </bpmn:boundaryEvent>
+
+    <bpmn:serviceTask id="Task_RevokeAndHalt" name="Revoke Provisional Tokens &amp; Halt Laptop Shipping">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="revoke-onboarding-access" />
+        <zeebe:ioMapping>
+          <zeebe:output source="=&quot;FAILED&quot;" target="bgvStatus" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_BgvErrorToRevoke</bpmn:incoming>
+      <bpmn:outgoing>Flow_RevokeToJoin</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <!-- Merge Normal BGV Path and Error Recovery Path before Parallel Join -->
+    <bpmn:exclusiveGateway id="Gateway_BgvMerge" name="BGV Outcome Merge">
+      <bpmn:incoming>Flow_BgvSuccessToJoin</bpmn:incoming>
+      <bpmn:incoming>Flow_RevokeToJoin</bpmn:incoming>
+      <bpmn:outgoing>Flow_BgvMergeToParallelJoin</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <!-- PARALLEL GATEWAY JOIN -->
+    <bpmn:parallelGateway id="Gateway_ParallelJoin" name="Synchronize Tracks">
+      <bpmn:incoming>Flow_MultiAppToJoin</bpmn:incoming>
+      <bpmn:incoming>Flow_BgvMergeToParallelJoin</bpmn:incoming>
+      <bpmn:outgoing>Flow_JoinToHardwareCheck</bpmn:outgoing>
+    </bpmn:parallelGateway>
+
+    <!-- EXCLUSIVE GATEWAY: CHECK IF BGV PASSED BEFORE HARDWARE DISPATCH -->
+    <bpmn:exclusiveGateway id="Gateway_CheckBgvPassed" name="Did BGV Pass?" default="Flow_BgvFailedAbort">
+      <bpmn:incoming>Flow_JoinToHardwareCheck</bpmn:incoming>
+      <bpmn:outgoing>Flow_BgvPassedToCallActivity</bpmn:outgoing>
+      <bpmn:outgoing>Flow_BgvFailedAbort</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+
+    <!-- =================================================================== -->
+    <!-- CALL ACTIVITY: REUSABLE HARDWARE ASSET PROCUREMENT & COURIER        -->
+    <!-- =================================================================== -->
+    <bpmn:callActivity id="CallActivity_HardwareProcurement" name="Invoke Hardware Asset Procurement &amp; Courier Process">
+      <bpmn:extensionElements>
+        <zeebe:calledElement processId="hardware-procurement-child" propagateAllChildVariables="true" />
+        <zeebe:ioMapping>
+          <zeebe:input source="=requestId" target="requestId" />
+          <zeebe:input source="=employeeName" target="employeeName" />
+          <zeebe:input source="=hardwareModel" target="hardwareModel" />
+          <zeebe:input source="=shippingAddress" target="shippingAddress" />
+        </zeebe:ioMapping>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_BgvPassedToCallActivity</bpmn:incoming>
+      <bpmn:outgoing>Flow_CallActivityToWelcome</bpmn:outgoing>
+    </bpmn:callActivity>
+
+    <!-- OUTBOUND SLACK / EMAIL CONNECTOR TASK -->
+    <bpmn:serviceTask id="Task_SlackWelcomeNotification" name="Dispatch Welcome Kit via Slack &amp; Email Connector">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="send-welcome-notification" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_CallActivityToWelcome</bpmn:incoming>
+      <bpmn:outgoing>Flow_WelcomeToSuccessEnd</bpmn:outgoing>
+    </bpmn:serviceTask>
+
+    <bpmn:endEvent id="EndEvent_OnboardingComplete" name="Employee Onboarded (Zero-Trust Verified)">
+      <bpmn:incoming>Flow_WelcomeToSuccessEnd</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <bpmn:endEvent id="EndEvent_OnboardingHalted" name="Onboarding Terminated (BGV Failed - Hardware Halted)">
+      <bpmn:incoming>Flow_BgvFailedAbort</bpmn:incoming>
+    </bpmn:endEvent>
+
+    <!-- SEQUENCE FLOWS -->
+    <bpmn:sequenceFlow id="Flow_StartToInit" sourceRef="StartEvent_Onboarding" targetRef="Task_InitIdentity" />
+    <bpmn:sequenceFlow id="Flow_InitToSplit" sourceRef="Task_InitIdentity" targetRef="Gateway_ParallelSplit" />
+    <bpmn:sequenceFlow id="Flow_SplitToMultiApp" sourceRef="Gateway_ParallelSplit" targetRef="SubProcess_MultiAppProvisioning" />
+    <bpmn:sequenceFlow id="Flow_SplitToBgvSub" sourceRef="Gateway_ParallelSplit" targetRef="SubProcess_BackgroundVerification" />
+    <bpmn:sequenceFlow id="Flow_MultiAppToJoin" sourceRef="SubProcess_MultiAppProvisioning" targetRef="Gateway_ParallelJoin" />
+    <bpmn:sequenceFlow id="Flow_BgvSuccessToJoin" sourceRef="SubProcess_BackgroundVerification" targetRef="Gateway_BgvMerge" />
+    <bpmn:sequenceFlow id="Flow_TimerToSlaAlert" sourceRef="Boundary_BgvSlaTimer" targetRef="Task_SendSlaAlert" />
+    <bpmn:sequenceFlow id="Flow_SlaAlertToEnd" sourceRef="Task_SendSlaAlert" targetRef="End_SlaAlert" />
+    <bpmn:sequenceFlow id="Flow_BgvErrorToRevoke" sourceRef="Boundary_BgvFailedError" targetRef="Task_RevokeAndHalt" />
+    <bpmn:sequenceFlow id="Flow_RevokeToJoin" sourceRef="Task_RevokeAndHalt" targetRef="Gateway_BgvMerge" />
+    <bpmn:sequenceFlow id="Flow_BgvMergeToParallelJoin" sourceRef="Gateway_BgvMerge" targetRef="Gateway_ParallelJoin" />
+    <bpmn:sequenceFlow id="Flow_JoinToHardwareCheck" sourceRef="Gateway_ParallelJoin" targetRef="Gateway_CheckBgvPassed" />
+    <bpmn:sequenceFlow id="Flow_BgvPassedToCallActivity" name="PASSED" sourceRef="Gateway_CheckBgvPassed" targetRef="CallActivity_HardwareProcurement">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=bgvStatus = "PASSED"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="Flow_BgvFailedAbort" name="FAILED" sourceRef="Gateway_CheckBgvPassed" targetRef="EndEvent_OnboardingHalted" />
+    <bpmn:sequenceFlow id="Flow_CallActivityToWelcome" sourceRef="CallActivity_HardwareProcurement" targetRef="Task_SlackWelcomeNotification" />
+    <bpmn:sequenceFlow id="Flow_WelcomeToSuccessEnd" sourceRef="Task_SlackWelcomeNotification" targetRef="EndEvent_OnboardingComplete" />
+  </bpmn:process>
+
+  <!-- VISUAL DIAGRAM COORDINATES FOR CAMUNDA MODELER -->
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="zero-trust-onboarding-process">
+      <bpmndi:BPMNShape id="StartEvent_Onboarding_di" bpmnElement="StartEvent_Onboarding">
+        <dc:Bounds x="152" y="292" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_InitIdentity_di" bpmnElement="Task_InitIdentity">
+        <dc:Bounds x="240" y="270" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_ParallelSplit_di" bpmnElement="Gateway_ParallelSplit">
+        <dc:Bounds x="395" y="285" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="SubProcess_MultiAppProvisioning_di" bpmnElement="SubProcess_MultiAppProvisioning" isExpanded="true">
+        <dc:Bounds x="500" y="60" width="540" height="220" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Start_AppSub_di" bpmnElement="Start_AppSub">
+        <dc:Bounds x="530" y="152" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_RequiresSecApproval_di" bpmnElement="Gateway_RequiresSecApproval" isMarkerVisible="true">
+        <dc:Bounds x="605" y="145" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_SecurityApproval_di" bpmnElement="Task_SecurityApproval">
+        <dc:Bounds x="690" y="85" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_ProvisionAppRest_di" bpmnElement="Task_ProvisionAppRest">
+        <dc:Bounds x="830" y="130" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_AppSub_di" bpmnElement="End_AppSub">
+        <dc:Bounds x="972" y="152" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_AppStartToGateway_di" bpmnElement="Flow_AppStartToGateway">
+        <di:waypoint x="566" y="170" />
+        <di:waypoint x="605" y="170" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ApprovalNeeded_di" bpmnElement="Flow_ApprovalNeeded">
+        <di:waypoint x="630" y="145" />
+        <di:waypoint x="630" y="125" />
+        <di:waypoint x="690" y="125" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_NoApprovalNeeded_di" bpmnElement="Flow_NoApprovalNeeded">
+        <di:waypoint x="630" y="195" />
+        <di:waypoint x="630" y="200" />
+        <di:waypoint x="830" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ApprovalToProvision_di" bpmnElement="Flow_ApprovalToProvision">
+        <di:waypoint x="790" y="125" />
+        <di:waypoint x="810" y="125" />
+        <di:waypoint x="810" y="150" />
+        <di:waypoint x="830" y="150" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_ProvisionToAppEnd_di" bpmnElement="Flow_ProvisionToAppEnd">
+        <di:waypoint x="930" y="170" />
+        <di:waypoint x="972" y="170" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="SubProcess_BackgroundVerification_di" bpmnElement="SubProcess_BackgroundVerification" isExpanded="true">
+        <dc:Bounds x="500" y="340" width="540" height="190" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Start_BgvSub_di" bpmnElement="Start_BgvSub">
+        <dc:Bounds x="530" y="417" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_SequentialRefCheck_di" bpmnElement="Task_SequentialRefCheck">
+        <dc:Bounds x="620" y="395" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_CriminalBgvCheck_di" bpmnElement="Task_CriminalBgvCheck">
+        <dc:Bounds x="780" y="395" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_BgvSub_di" bpmnElement="End_BgvSub">
+        <dc:Bounds x="942" y="417" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_BgvStartToSeqRef_di" bpmnElement="Flow_BgvStartToSeqRef">
+        <di:waypoint x="566" y="435" />
+        <di:waypoint x="620" y="435" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_SeqRefToCrimCheck_di" bpmnElement="Flow_SeqRefToCrimCheck">
+        <di:waypoint x="720" y="435" />
+        <di:waypoint x="780" y="435" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CrimCheckToBgvEnd_di" bpmnElement="Flow_CrimCheckToBgvEnd">
+        <di:waypoint x="880" y="435" />
+        <di:waypoint x="942" y="435" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="Boundary_BgvSlaTimer_di" bpmnElement="Boundary_BgvSlaTimer">
+        <dc:Bounds x="632" y="512" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Boundary_BgvFailedError_di" bpmnElement="Boundary_BgvFailedError">
+        <dc:Bounds x="832" y="512" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_SendSlaAlert_di" bpmnElement="Task_SendSlaAlert">
+        <dc:Bounds x="600" y="580" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_SlaAlert_di" bpmnElement="End_SlaAlert">
+        <dc:Bounds x="742" y="602" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_RevokeAndHalt_di" bpmnElement="Task_RevokeAndHalt">
+        <dc:Bounds x="890" y="580" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_BgvMerge_di" bpmnElement="Gateway_BgvMerge" isMarkerVisible="true">
+        <dc:Bounds x="1085" y="410" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_ParallelJoin_di" bpmnElement="Gateway_ParallelJoin">
+        <dc:Bounds x="1175" y="285" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Gateway_CheckBgvPassed_di" bpmnElement="Gateway_CheckBgvPassed" isMarkerVisible="true">
+        <dc:Bounds x="1275" y="285" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="CallActivity_HardwareProcurement_di" bpmnElement="CallActivity_HardwareProcurement">
+        <dc:Bounds x="1380" y="270" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_SlackWelcomeNotification_di" bpmnElement="Task_SlackWelcomeNotification">
+        <dc:Bounds x="1530" y="270" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_OnboardingComplete_di" bpmnElement="EndEvent_OnboardingComplete">
+        <dc:Bounds x="1682" y="292" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_OnboardingHalted_di" bpmnElement="EndEvent_OnboardingHalted">
+        <dc:Bounds x="1382" y="417" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_StartToInit_di" bpmnElement="Flow_StartToInit">
+        <di:waypoint x="188" y="310" />
+        <di:waypoint x="240" y="310" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_InitToSplit_di" bpmnElement="Flow_InitToSplit">
+        <di:waypoint x="340" y="310" />
+        <di:waypoint x="395" y="310" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_SplitToMultiApp_di" bpmnElement="Flow_SplitToMultiApp">
+        <di:waypoint x="420" y="285" />
+        <di:waypoint x="420" y="170" />
+        <di:waypoint x="500" y="170" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_SplitToBgvSub_di" bpmnElement="Flow_SplitToBgvSub">
+        <di:waypoint x="420" y="335" />
+        <di:waypoint x="420" y="435" />
+        <di:waypoint x="500" y="435" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_MultiAppToJoin_di" bpmnElement="Flow_MultiAppToJoin">
+        <di:waypoint x="1040" y="170" />
+        <di:waypoint x="1200" y="170" />
+        <di:waypoint x="1200" y="285" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_BgvSuccessToJoin_di" bpmnElement="Flow_BgvSuccessToJoin">
+        <di:waypoint x="1040" y="435" />
+        <di:waypoint x="1085" y="435" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_TimerToSlaAlert_di" bpmnElement="Flow_TimerToSlaAlert">
+        <di:waypoint x="650" y="548" />
+        <di:waypoint x="650" y="580" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_SlaAlertToEnd_di" bpmnElement="Flow_SlaAlertToEnd">
+        <di:waypoint x="700" y="620" />
+        <di:waypoint x="742" y="620" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_BgvErrorToRevoke_di" bpmnElement="Flow_BgvErrorToRevoke">
+        <di:waypoint x="850" y="548" />
+        <di:waypoint x="850" y="620" />
+        <di:waypoint x="890" y="620" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_RevokeToJoin_di" bpmnElement="Flow_RevokeToJoin">
+        <di:waypoint x="990" y="620" />
+        <di:waypoint x="1110" y="620" />
+        <di:waypoint x="1110" y="460" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_BgvMergeToParallelJoin_di" bpmnElement="Flow_BgvMergeToParallelJoin">
+        <di:waypoint x="1135" y="435" />
+        <di:waypoint x="1200" y="435" />
+        <di:waypoint x="1200" y="335" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_JoinToHardwareCheck_di" bpmnElement="Flow_JoinToHardwareCheck">
+        <di:waypoint x="1225" y="310" />
+        <di:waypoint x="1275" y="310" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_BgvPassedToCallActivity_di" bpmnElement="Flow_BgvPassedToCallActivity">
+        <di:waypoint x="1325" y="310" />
+        <di:waypoint x="1380" y="310" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_BgvFailedAbort_di" bpmnElement="Flow_BgvFailedAbort">
+        <di:waypoint x="1300" y="335" />
+        <di:waypoint x="1300" y="435" />
+        <di:waypoint x="1382" y="435" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_CallActivityToWelcome_di" bpmnElement="Flow_CallActivityToWelcome">
+        <di:waypoint x="1480" y="310" />
+        <di:waypoint x="1530" y="310" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_WelcomeToSuccessEnd_di" bpmnElement="Flow_WelcomeToSuccessEnd">
+        <di:waypoint x="1630" y="310" />
+        <di:waypoint x="1682" y="310" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
